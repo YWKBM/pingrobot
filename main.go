@@ -1,52 +1,39 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
-	"pingrobot/workerpool"
+	"pingrobot/database"
+	workerpool "pingrobot/workerpool"
 	"syscall"
-	"time"
+
+	"github.com/spf13/viper"
 )
 
 func main() {
-	var urls = []string{
-		"https://workshop.zhashkevych.com/",
-		"https://golang-ninja.com/",
-		"https://zhashkevych.com/",
-		"https://google.com/",
-		"https://golang.org/",
+	viper.AddConfigPath("configs")
+	viper.SetConfigName("config")
+	viper.ReadInConfig()
+
+	connectionInfo := database.ConnectionInfo{
+		Host:     viper.GetString("db.host"),
+		Port:     viper.GetString("db.port"),
+		DBName:   viper.GetString("db.dbname"),
+		Username: viper.GetString("db.username"),
+		SSLMode:  viper.GetString("db.sslmode"),
+		Password: viper.GetString("db.password"),
 	}
 
-	results := make(chan workerpool.Result)
+	db, err := database.NewPostgresConnection(connectionInfo)
+	if err != nil {
+		log.Fatal()
+	}
 
-	pool := workerpool.New(4, 2*time.Second, results)
-	pool.Init()
-
-	go generateJobs(pool, urls)
-	go processResults(results)
+	workerpool.Run(db)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
 	<-quit
-
-	pool.Stop()
-
-}
-
-func generateJobs(wp *workerpool.Pool, urls []string) {
-	for {
-		for _, url := range urls {
-			wp.Push(workerpool.Job{URL: url})
-		}
-	}
-}
-
-func processResults(results chan workerpool.Result) {
-	go func() {
-		for result := range results {
-			fmt.Println(result.Info())
-		}
-	}()
 }
