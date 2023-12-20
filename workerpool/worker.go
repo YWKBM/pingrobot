@@ -52,6 +52,7 @@ func (w *Worker) process(workerId int, task WebServiceInfo, wg *sync.WaitGroup) 
 		ID:        task.ID,
 		UserEmail: task.UserEmail,
 		URL:       url,
+		Alarm:     task.Alarm,
 	}
 
 	now := time.Now()

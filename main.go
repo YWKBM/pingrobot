@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"pingrobot/database"
+	"pingrobot/email"
 	workerpool "pingrobot/workerpool"
 	"syscall"
 
@@ -29,8 +30,9 @@ func main() {
 	if err != nil {
 		log.Fatal()
 	}
+	smtpSender := email.NewSMTPSender("ywkbm1973@gmail.com", "ctjf gmqd kcmc xqac", "smtp.gmail.com", 587)
 
-	workerpool.Run(db)
+	workerpool.Run(db, smtpSender)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)

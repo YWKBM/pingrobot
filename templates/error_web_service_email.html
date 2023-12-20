@@ -1,0 +1,11 @@
+<html>
+    <head><title>Results</title></head>
+    <body>
+        <h1>Results</h1>
+        <ul>
+            {{range .}}
+                <li>ID: {{.ID}}, Email: {{.UserEmail}}, URL: {{.URL}}, Status: {{.StatusCode}}, Time: {{.ResponseTime}}, Error: {{.Error}}</li>
+            {{end}}
+        </ul>
+    </body>
+    </html>

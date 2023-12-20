@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"pingrobot/email"
+	"sort"
 	"sync"
 	"time"
 )
@@ -16,6 +18,7 @@ type WebServiceInfo struct {
 	Link      string `json:"link"`
 	Port      int    `json:"port"`
 	Status    string `json:"status"`
+	Alarm     string `json:"alarm"`
 }
 
 type Result struct {
@@ -25,25 +28,31 @@ type Result struct {
 	StatusCode   int
 	ResponseTime time.Duration
 	Error        error
+	Alarm        string
 }
 
 type Pool struct {
-	db           *sql.DB
-	workersCount int
-	tasks        chan *WebServiceInfo
-	results      chan Result
-	workers      []*Worker
-	webServices  []*WebServiceInfo
-	wg           sync.WaitGroup
+	db            *sql.DB
+	smtp          *email.SMTPSender
+	workersCount  int
+	tasks         chan *WebServiceInfo
+	results       chan Result
+	workers       []*Worker
+	webServices   []*WebServiceInfo
+	mu            sync.Mutex
+	resultsToSend []Result
+	wg            sync.WaitGroup
 }
 
-func NewPool(db *sql.DB, workersCount int, tasks chan *WebServiceInfo, results chan Result) *Pool {
+func NewPool(db *sql.DB, workersCount int, tasks chan *WebServiceInfo, results chan Result, smtp *email.SMTPSender) *Pool {
 	return &Pool{
-		db:           db,
-		workersCount: workersCount,
-		tasks:        tasks,
-		results:      results,
-		wg:           sync.WaitGroup{},
+		db:            db,
+		smtp:          smtp,
+		workersCount:  workersCount,
+		tasks:         tasks,
+		results:       results,
+		resultsToSend: make([]Result, 0, 128),
+		wg:            sync.WaitGroup{},
 	}
 }
 
@@ -65,7 +74,7 @@ func (p *Pool) getAllWebServiceInfo() {
 	for rows.Next() {
 		var webService WebServiceInfo
 
-		err := rows.Scan(&webService.ID, &webService.UserId, &webService.UserEmail, &webService.Name, &webService.Link, &webService.Port, &webService.Status)
+		err := rows.Scan(&webService.ID, &webService.UserId, &webService.UserEmail, &webService.Name, &webService.Link, &webService.Port, &webService.Status, &webService.Alarm)
 		p.webServices = append(p.webServices, &webService)
 		if err != nil {
 			fmt.Println(err)
@@ -86,22 +95,63 @@ func (p *Pool) generateTasks() {
 			}
 		}
 		time.Sleep(60 * time.Second)
+		//send Email
+		go func() {
+			if len(p.resultsToSend) != 0 {
+				sort.Slice(p.resultsToSend, func(i, j int) bool {
+					return p.resultsToSend[i].UserEmail < p.resultsToSend[j].UserEmail
+				})
+
+				p.processResutlToSend(p.resultsToSend)
+				p.resultsToSend = make([]Result, 0, 128)
+			}
+		}()
 	}
 }
 
 func (p *Pool) processResults() {
-	go func() {
-		for {
-			result := <-p.results
-			fmt.Println(result)
-			if result.Error != nil {
-				//TODO: send email
-				p.db.Query("UPDATE web_services SET status = 'ERROR' WHERE ID = $1", result.ID)
-				continue
+	for {
+		select {
+		case result, ok := <-p.results:
+			if !ok {
+				log.Fatal()
 			}
-			p.db.Query("UPDATE web_services SET status = 'SUCCESS' WHERE ID = $1", result.ID)
+			if result.Error != nil {
+				if result.Alarm == "NOT_ALARMED" {
+					p.resultsToSend = append(p.resultsToSend, result)
+					//TODO: Set status 'ALARMED' after alarmed processed
+					p.db.Query("UPDATE web_services SET alarm = 'ALARMED' WHERE ID = $1", result.ID)
+				}
+				p.db.Query("UPDATE web_services SET status = 'ERROR' WHERE ID = $1", result.ID)
+			} else {
+				p.db.Query("UPDATE web_services SET status = 'SUCCESS' WHERE ID = $1", result.ID)
+				if result.Alarm == "ALARMED" {
+					p.db.Query("UPDATE web_services SET alarm = 'NOT_ALARMED' WHERE ID = $1", result.ID)
+				}
+			}
+			fmt.Println(result)
+		default:
+			fmt.Println("empty result chanel")
+			time.Sleep(time.Millisecond * 10)
 		}
-	}()
+	}
+
+}
+
+func (p *Pool) processResutlToSend(results []Result) {
+	pivot := 0
+	for i := 0; i < len(results); i++ {
+		if results[i].UserEmail != results[pivot].UserEmail {
+			sendEmailInput := email.NewSendEmailInput(results[pivot].UserEmail, "ERROR")
+			sendEmailInput.GenerateBody("templates/error_web_service_email.html", results[pivot:i])
+			p.smtp.SendMessage(*sendEmailInput)
+			pivot = i
+		} else if i == len(results)-1 {
+			sendEmailInput := email.NewSendEmailInput(results[pivot].UserEmail, "ERROR")
+			sendEmailInput.GenerateBody("templates/error_web_service_email.html", results[pivot:i+1])
+			p.smtp.SendMessage(*sendEmailInput)
+		}
+	}
 }
 
 func (p *Pool) Stop() {
